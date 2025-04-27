@@ -1,19 +1,20 @@
 from ultralytics.models.yolo import YOLO
 
-model = YOLO("../yolo_demo/yolo11n-pose.pt")
+model = YOLO("./runs/pose/yolo11n-pose-Baseline/weights/best.pt")
 
 model.train(
     data="/99_TemporaryData/haochen75/edge_detect/book-keypoints.yaml",
-    epochs=300,
+    task="pose",
+    name="yolo11n-pose-Baseline_augmented",
+    epochs=100,
     batch=64,
     workers=16,
     device=["0"],
     imgsz=320,
     optimizer="Adam",
-    # save_period=10,
     lr0=1e-4,
     lrf=0.01,
-    mosaic=1.0,
+    mosaic=0.0,
     box=2.0,
     pose=15.0,
     kobj=1.0,
