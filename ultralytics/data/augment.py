@@ -1176,8 +1176,8 @@ class RandomPerspective:
         xy[:, :2] = keypoints[..., :2].reshape(n * nkpt, 2)
         xy = xy @ M.T  # transform
         xy = xy[:, :2] / xy[:, 2:3]  # perspective rescale or affine
-        out_mask = (xy[:, 0] < 0) | (xy[:, 1] < 0) | (xy[:, 0] > self.size[0]) | (xy[:, 1] > self.size[1])
-        visible[out_mask] = 0
+        # out_mask = (xy[:, 0] < 0) | (xy[:, 1] < 0) | (xy[:, 0] > self.size[0]) | (xy[:, 1] > self.size[1])
+        # visible[out_mask] = 0
         return np.concatenate([xy, visible], axis=-1).reshape(n, nkpt, 3)
 
     def __call__(self, labels):
@@ -1230,18 +1230,31 @@ class RandomPerspective:
         self.size = img.shape[1] + border[1] * 2, img.shape[0] + border[0] * 2  # w, h
         # M is affine matrix
         # Scale for func:`box_candidates`
+        original_img = img.copy()
         img, M, scale = self.affine_transform(img, border)
 
-        bboxes = self.apply_bboxes(instances.bboxes, M)
-
+        bboxes = instances.bboxes
         segments = instances.segments
         keypoints = instances.keypoints
         # Update bboxes if there are segments.
-        if len(segments):
-            bboxes, segments = self.apply_segments(segments, M)
+        # if len(segments):
+        #     bboxes, segments = self.apply_segments(segments, M)
 
         if keypoints is not None:
-            keypoints = self.apply_keypoints(keypoints, M)
+            temp_kps = self.apply_keypoints(keypoints, M)
+            # print(temp_kps.shape)
+            all_inside = all(
+                    0 <= x < img.shape[1] and 0 <= y < img.shape[0]
+                    for (x, y,visible) in temp_kps[0 , :, :]
+                )
+            if all_inside:
+                bboxes = self.apply_bboxes(instances.bboxes, M)
+                keypoints = temp_kps
+            else:
+                img = original_img
+                scale=1.0
+                bboxes = instances.bboxes
+
         new_instances = Instances(bboxes, segments, keypoints, bbox_format="xyxy", normalized=False)
         # Clip
         new_instances.clip(*self.size)
@@ -1857,13 +1870,14 @@ class Albumentations:
 
             # Transforms
             T = [
-                A.Blur(p=0.01),
-                A.MedianBlur(p=0.01),
-                A.ToGray(p=0.01),
-                A.CLAHE(p=0.01),
-                A.RandomBrightnessContrast(p=0.0),
-                A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_range=(75, 100), p=0.0),
+                A.GaussianBlur(blur_limit=(3, 5), sigma_limit=1.0, p=0.2),
+                # A.MedianBlur(p=0.2),
+                A.ToGray(p=0.2),
+                A.CLAHE(p=0.2,clip_limit=2.0),
+                A.RandomBrightnessContrast(brightness_limit=(-0.1, 0.1), contrast_limit=(-0.1, 0.1), p=0.3),
+                # A.RandomGamma(p=0.5),
+                A.MotionBlur(p=0.2),
+                # A.ImageCompression(quality_lower=75, quality_upper=100, p=0.0),
             ]
 
             # Compose transforms
@@ -2447,7 +2461,7 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
             Albumentations(p=1.0),
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
-            RandomFlip(direction="vertical", p=hyp.flipud),
+            RandomFlip(direction="vertical", p=hyp.flipud,flip_idx=flip_idx),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
         ]
     )  # transforms

@@ -1,15 +1,21 @@
 from ultralytics.models.yolo import YOLO
 
-model = YOLO("./runs/pose/yolo11n-pose-Baseline/weights/best.pt")
+# model = YOLO(
+#     "./runs/pose/yolo11n_pose_baseline_standard_augmented_big6/weights/best.pt",
+# )
+
+model = YOLO(
+    "yolo11n-pose.pt",
+)
 
 model.train(
-    data="/99_TemporaryData/haochen75/edge_detect/book-keypoints.yaml",
+    data="/99_TemporaryData/haochen75/edge_detect/new/book-keypoints.yaml",
     task="pose",
-    name="yolo11n-pose-Baseline_augmented",
-    epochs=100,
+    name="yolo11n_pose_baseline_standard_augmented_big",
+    epochs=300,
     batch=64,
     workers=16,
-    device=["0"],
+    device=[0],
     imgsz=320,
     optimizer="Adam",
     lr0=1e-4,
@@ -23,7 +29,30 @@ model.train(
     scale=0.25,
     degrees=20.0,
     translate=0.1,
+    fliplr=0.0,
+    flipud=0.0,
     cos_lr=True,
     conf=0.9,
     iou=0.8,
+    # patience=0,
+    amp=False,
+    auto_augment=None,
+    # val = False,
 )
+
+# model = YOLO("./runs/pose/yolo11n-pose-Baseline/weights/best.pt")
+# metrics = model.val(
+#     data="/99_TemporaryData/haochen75/edge_detect/new/book-keypoints.yaml",
+#     task="test",
+#     conf=0.9,
+#     iou=0.5,
+#     device="0",
+#     imgsz=320,
+#     rect=True,
+#     batch=64,
+#     save_json=True,
+#     save = True,
+#     plots = True,
+#     save_crop = True,
+#     # save_txt = True,
+# )
