@@ -1264,6 +1264,78 @@ class C2fCIB(C2f):
         self.m = nn.ModuleList(CIB(self.c, self.c, shortcut, e=1.0, lk=lk) for _ in range(n))
 
 
+
+class PAM_Module(nn.Module):
+    """ Multi-head Position attention module"""
+    def __init__(self, in_dim, num_heads=4):
+        super(PAM_Module, self).__init__()
+        self.chanel_in = in_dim
+        self.num_heads = num_heads
+        assert in_dim % num_heads == 0, "in_dim must be divisible by num_heads"
+        self.head_dim = in_dim // num_heads
+
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        """
+            inputs :
+                x : input feature maps( B X C X H X W)
+            returns :
+                out : attention value + input feature
+                attention: B X (HxW) X (HxW)
+        """
+        m_batchsize, C, height, width = x.size()
+        # project and reshape for multi-head
+        proj_query = self.query_conv(x).view(m_batchsize, self.num_heads, self.head_dim, height * width)
+        proj_query = proj_query.permute(0, 1, 3, 2)  # (B, heads, HW, head_dim)
+        proj_key = self.key_conv(x).view(m_batchsize, self.num_heads, self.head_dim, height * width)
+        # (B, heads, head_dim, HW)
+        energy = torch.matmul(proj_query, proj_key)  # (B, heads, HW, HW)
+        attention = self.softmax(energy)
+        proj_value = self.value_conv(x).view(m_batchsize, self.num_heads, self.head_dim, height * width)
+        # (B, heads, head_dim, HW)
+        out = torch.matmul(attention, proj_value.permute(0, 1, 3, 2))  # (B, heads, HW, head_dim)
+        out = out.permute(0, 1, 3, 2).contiguous().view(m_batchsize, C, height, width)
+        out = self.gamma * out + x
+        return out
+
+class CAM_Module(nn.Module):
+    """ Multi-head Channel attention module"""
+    def __init__(self, in_dim, num_heads=4):
+        super(CAM_Module, self).__init__()
+        self.chanel_in = in_dim
+        self.num_heads = num_heads
+        assert in_dim % num_heads == 0, "in_dim must be divisible by num_heads"
+        self.head_dim = in_dim // num_heads
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        """
+            inputs :
+                x : input feature maps( B X C X H X W)
+            returns :
+                out : attention value + input feature
+                attention: B X C X C
+        """
+        m_batchsize, C, height, width = x.size()
+        # (B, heads, head_dim, H*W)
+        x_reshaped = x.view(m_batchsize, self.num_heads, self.head_dim, height * width)
+        proj_query = x_reshaped
+        proj_key = x_reshaped.permute(0, 1, 3, 2)  # (B, heads, HW, head_dim)
+        energy = torch.matmul(proj_query, proj_key)  # (B, heads, head_dim, head_dim)
+        energy_new = torch.max(energy, -1, keepdim=True)[0].expand_as(energy) - energy
+        attention = self.softmax(energy_new)
+        proj_value = x_reshaped
+        out = torch.matmul(attention, proj_value)  # (B, heads, head_dim, H*W)
+        out = out.view(m_batchsize, C, height, width)
+        out = self.gamma * out + x
+        return out
+
 class Attention(nn.Module):
     """
     Attention module that performs self-attention on the input tensor.
@@ -1306,7 +1378,7 @@ class Attention(nn.Module):
     def forward(self, x):
         """
         Forward pass of the Attention module.
-
+c
         Args:
             x (torch.Tensor): The input tensor.
 
@@ -1326,6 +1398,54 @@ class Attention(nn.Module):
         x = self.proj(x)
         return x
 
+class DANetHead(nn.Module):
+    def __init__(self, in_channels, out_channels, norm_layer):
+        super(DANetHead, self).__init__()
+        inter_channels = in_channels // 4
+        self.conv5a = nn.Sequential(nn.Conv2d(in_channels, inter_channels, 3, padding=1, bias=False),
+                                   norm_layer(inter_channels),
+                                   nn.ReLU())
+        
+        self.conv5c = nn.Sequential(nn.Conv2d(in_channels, inter_channels, 3, padding=1, bias=False),
+                                   norm_layer(inter_channels),
+                                   nn.ReLU())
+
+        self.sa = PAM_Module(inter_channels)
+        self.sc = CAM_Module(inter_channels)
+        self.conv51 = nn.Sequential(nn.Conv2d(inter_channels, inter_channels, 3, padding=1, bias=False),
+                                   norm_layer(inter_channels),
+                                   nn.ReLU())
+        self.conv52 = nn.Sequential(nn.Conv2d(inter_channels, inter_channels, 3, padding=1, bias=False),
+                                   norm_layer(inter_channels),
+                                   nn.ReLU())
+
+        self.conv6 = nn.Sequential(nn.Dropout2d(0.1, False), nn.Conv2d(inter_channels, out_channels, 1))
+        self.conv7 = nn.Sequential(nn.Dropout2d(0.1, False), nn.Conv2d(inter_channels, out_channels, 1))
+
+        self.conv8 = nn.Sequential(nn.Dropout2d(0.1, False), nn.Conv2d(inter_channels, out_channels, 1))
+
+    def forward(self, x):
+        feat1 = self.conv5a(x)
+        sa_feat = self.sa(feat1)
+        sa_conv = self.conv51(sa_feat)
+        sa_output = self.conv6(sa_conv)
+
+        feat2 = self.conv5c(x)
+        sc_feat = self.sc(feat2)
+        sc_conv = self.conv52(sc_feat)
+        sc_output = self.conv7(sc_conv)
+
+        feat_sum = sa_conv+sc_conv
+        
+        sasc_output = self.conv8(feat_sum)
+
+        # torch.cat([sasc_output, sa_output,sc_output], dim=1)
+
+        # output = [sasc_output]
+        # output.append(sa_output)
+        # output.append(sc_output)
+        return torch.cat([sasc_output, sa_output, sc_output], dim=1)
+    
 
 class PSABlock(nn.Module):
     """
@@ -1361,7 +1481,10 @@ class PSABlock(nn.Module):
         """
         super().__init__()
 
-        self.attn = Attention(c, attn_ratio=attn_ratio, num_heads=num_heads)
+        self.attn = PAM_Module(c)
+        self.attn_cam = CAM_Module(c)
+        self.dathead = DANetHead(c, c, nn.BatchNorm2d)
+        self.adapter = Conv(c*3,c, 1)
         self.ffn = nn.Sequential(Conv(c, c * 2, 1), Conv(c * 2, c, 1, act=False))
         self.add = shortcut
 
@@ -1375,7 +1498,11 @@ class PSABlock(nn.Module):
         Returns:
             (torch.Tensor): Output tensor after attention and feed-forward processing.
         """
-        x = x + self.attn(x) if self.add else self.attn(x)
+        # print(self.dathead(x).shape)
+        # print(self.attn_cam(x).shape)
+      
+        cat_module = self.adapter(self.dathead(x))#self.attn_cam(x) + self.attn(x)
+        x = x + cat_module if self.add else cat_module
         x = x + self.ffn(x) if self.add else self.ffn(x)
         return x
 
